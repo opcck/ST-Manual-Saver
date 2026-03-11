@@ -7,40 +7,30 @@ const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 const defaultSettings = {
     enabled: true,
     allowTimedSave: true,
-    allowInterval: 10, // minutes
+    allowInterval: 10,
     playSound: true,
 };
 
 let isManualSave = false;
 let lastAllowedSaveTime = 0;
-let originalFetch = null;
-let fetchPatched = false;
-let menuButton = null;
-let buttonObserver = null;
+let originalFetch = window.fetch;
+let menuCheckInterval = null;
 
 function loadSettings() {
-    if (!extension_settings.manual_saver) {
-        extension_settings.manual_saver = {};
-    }
-
-    extension_settings.manual_saver = {
-        ...defaultSettings,
-        ...extension_settings.manual_saver,
-    };
-}
-
-function getSettings() {
-    return extension_settings.manual_saver;
-}
-
-function saveSettings() {
-    saveSettingsDebounced();
+    extension_settings.manual_saver = extension_settings.manual_saver || {};
+    extension_settings.manual_saver.enabled =
+        extension_settings.manual_saver.enabled ?? defaultSettings.enabled;
+    extension_settings.manual_saver.allowTimedSave =
+        extension_settings.manual_saver.allowTimedSave ?? defaultSettings.allowTimedSave;
+    extension_settings.manual_saver.allowInterval =
+        extension_settings.manual_saver.allowInterval ?? defaultSettings.allowInterval;
+    extension_settings.manual_saver.playSound =
+        extension_settings.manual_saver.playSound ?? defaultSettings.playSound;
 }
 
 function playSaveSuccessSound() {
     try {
-        const settings = getSettings();
-        if (!settings.playSound) return;
+        if (!extension_settings.manual_saver.playSound) return;
 
         const audio = new Audio(`${extensionFolderPath}/save-success.mp3`);
         audio.volume = 0.6;
@@ -52,45 +42,34 @@ function playSaveSuccessSound() {
     }
 }
 
-function isSaveRequest(url) {
-    if (!url) return false;
-
-    const urlString = typeof url === 'string' ? url : url.url || '';
-    return (
-        urlString.includes('/api/chats/save') ||
-        urlString.includes('/api/chats/group/save')
-    );
-}
-
 function isTimedSaveAllowed() {
-    const settings = getSettings();
+    if (!extension_settings.manual_saver.allowTimedSave) return false;
 
-    if (!settings.enabled) return true;
-    if (!settings.allowTimedSave) return false;
-
-    const intervalMs = Number(settings.allowInterval || 0) * 60 * 1000;
+    const intervalMs = Number(extension_settings.manual_saver.allowInterval || 0) * 60 * 1000;
     if (intervalMs <= 0) return true;
 
     return Date.now() - lastAllowedSaveTime >= intervalMs;
 }
 
-async function patchedFetch(...args) {
-    const [resource] = args;
-    const url = typeof resource === 'string' ? resource : resource?.url;
+function isSaveRequest(url) {
+    if (!url) return false;
+    return url.includes('/api/chats/save') || url.includes('/api/chats/group/save');
+}
+
+window.fetch = async function (...args) {
+    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
 
     if (!isSaveRequest(url)) {
-        return originalFetch(...args);
+        return originalFetch.apply(this, args);
     }
 
-    const settings = getSettings();
-
-    if (!settings.enabled) {
-        return originalFetch(...args);
+    if (!extension_settings.manual_saver.enabled) {
+        return originalFetch.apply(this, args);
     }
 
     if (isManualSave) {
         try {
-            const response = await originalFetch(...args);
+            const response = await originalFetch.apply(this, args);
             lastAllowedSaveTime = Date.now();
 
             if (response.ok) {
@@ -108,7 +87,7 @@ async function patchedFetch(...args) {
 
     if (isTimedSaveAllowed()) {
         lastAllowedSaveTime = Date.now();
-        const response = await originalFetch(...args);
+        const response = await originalFetch.apply(this, args);
 
         if (response.ok) {
             playSaveSuccessSound();
@@ -123,106 +102,92 @@ async function patchedFetch(...args) {
         JSON.stringify({
             status: 'ok',
             message: 'Blocked by ST-Manual-Saver',
-            blocked: true,
         }),
         {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
-        },
+        }
     );
-}
+};
 
-function patchFetch() {
-    if (fetchPatched) return;
-    if (typeof window.fetch !== 'function') return;
+function appendSettingsHtml() {
+    if ($('#manual_saver_settings').length) return;
 
-    originalFetch = window.fetch.bind(window);
-    window.fetch = patchedFetch;
-    fetchPatched = true;
-}
-
-function createSettingsHtml() {
-    const settings = getSettings();
-
-    return `
-    <div id="manual_saver_settings" class="manual_saver_settings">
+    const settingsHtml = `
+    <div id="manual_saver_settings" class="extension_block">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
                 <b>ST Manual Saver</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <div class="flex-container alignitemscenter marginBot10">
-                    <label class="checkbox_label" for="manual_saver_enabled">
-                        <input id="manual_saver_enabled" type="checkbox" ${settings.enabled ? 'checked' : ''}>
-                        启用手动保存模式
-                    </label>
-                </div>
+                <label class="checkbox_label">
+                    <input type="checkbox" id="manual_saver_enabled">
+                    启用手动保存模式
+                </label>
+                <br>
 
-                <div class="flex-container alignitemscenter marginBot10">
-                    <label class="checkbox_label" for="manual_saver_allow_timed_save">
-                        <input id="manual_saver_allow_timed_save" type="checkbox" ${settings.allowTimedSave ? 'checked' : ''}>
-                        启用定时放行自动保存
-                    </label>
-                </div>
+                <label class="checkbox_label">
+                    <input type="checkbox" id="manual_saver_allowTimedSave">
+                    启用定时自动保存放行
+                </label>
+                <br>
 
-                <div class="flex-container alignitemscenter marginBot10">
-                    <label for="manual_saver_allow_interval" style="margin-right: 10px;">自动保存放行间隔（分钟）</label>
-                    <input id="manual_saver_allow_interval" type="number" min="0" step="1" value="${settings.allowInterval}">
-                </div>
+                <label for="manual_saver_allowInterval">自动保存放行间隔（分钟）</label>
+                <input
+                    type="number"
+                    id="manual_saver_allowInterval"
+                    min="0"
+                    step="1"
+                    class="text_pole"
+                    style="max-width: 120px;"
+                >
+                <br><br>
 
-                <div class="flex-container alignitemscenter marginBot10">
-                    <label class="checkbox_label" for="manual_saver_play_sound">
-                        <input id="manual_saver_play_sound" type="checkbox" ${settings.playSound ? 'checked' : ''}>
-                        保存成功时播放提示音
-                    </label>
-                </div>
-
-                <small>
-                    说明：<br>
-                    1. 手动点击“保存聊天”时会保存并播放提示音。<br>
-                    2. 自动保存只有在达到设定间隔时才会放行，并播放提示音。<br>
-                    3. 其他自动保存请求会被拦截。
-                </small>
+                <label class="checkbox_label">
+                    <input type="checkbox" id="manual_saver_playSound">
+                    保存成功时播放提示音
+                </label>
             </div>
         </div>
     </div>`;
+
+    $('#extensions_settings').append(settingsHtml);
+
+    $('#manual_saver_enabled')
+        .prop('checked', extension_settings.manual_saver.enabled)
+        .on('change', function () {
+            extension_settings.manual_saver.enabled = $(this).prop('checked');
+            saveSettingsDebounced();
+            updateButtonState();
+        });
+
+    $('#manual_saver_allowTimedSave')
+        .prop('checked', extension_settings.manual_saver.allowTimedSave)
+        .on('change', function () {
+            extension_settings.manual_saver.allowTimedSave = $(this).prop('checked');
+            saveSettingsDebounced();
+        });
+
+    $('#manual_saver_allowInterval')
+        .val(extension_settings.manual_saver.allowInterval)
+        .on('input change', function () {
+            const value = Number($(this).val());
+            extension_settings.manual_saver.allowInterval = Number.isFinite(value) && value >= 0
+                ? value
+                : defaultSettings.allowInterval;
+            saveSettingsDebounced();
+        });
+
+    $('#manual_saver_playSound')
+        .prop('checked', extension_settings.manual_saver.playSound)
+        .on('change', function () {
+            extension_settings.manual_saver.playSound = $(this).prop('checked');
+            saveSettingsDebounced();
+        });
 }
 
-function bindSettingsEvents() {
-    $('#manual_saver_enabled').on('input change', function () {
-        getSettings().enabled = $(this).prop('checked');
-        saveSettings();
-        updateButtonState();
-    });
-
-    $('#manual_saver_allow_timed_save').on('input change', function () {
-        getSettings().allowTimedSave = $(this).prop('checked');
-        saveSettings();
-    });
-
-    $('#manual_saver_allow_interval').on('input change', function () {
-        const value = Number($(this).val());
-        getSettings().allowInterval = Number.isFinite(value) && value >= 0 ? value : defaultSettings.allowInterval;
-        saveSettings();
-    });
-
-    $('#manual_saver_play_sound').on('input change', function () {
-        getSettings().playSound = $(this).prop('checked');
-        saveSettings();
-    });
-}
-
-function renderSettings() {
-    const container = $('#extensions_settings');
-    if (!container.length) return;
-
-    $('#manual_saver_settings').remove();
-    container.append(createSettingsHtml());
-    bindSettingsEvents();
-}
-
-async function triggerManualSave() {
+async function handleManualSaveClick() {
     try {
         isManualSave = true;
         await saveChatConditional();
@@ -233,69 +198,47 @@ async function triggerManualSave() {
     }
 }
 
-function createMenuButton() {
-    const button = $(`
-        <div id="manualSaveButton" class="list-group-item flex-container">
-            <i class="fa-solid fa-floppy-disk"></i>
-            <span>保存聊天</span>
-        </div>
-    `);
-
-    button.on('click', async () => {
-        await triggerManualSave();
-    });
-
-    return button;
-}
-
 function getMenuContainer() {
-    const extensionsMenu = $('#extensionsMenu');
-    if (extensionsMenu.length) return extensionsMenu;
-
-    const optionsMenu = $('#options');
-    if (optionsMenu.length) return optionsMenu;
-
-    return $();
+    if ($('#extensionsMenu').length) return $('#extensionsMenu');
+    if ($('#options').length) return $('#options');
+    return null;
 }
 
 function updateButtonState() {
-    const settings = getSettings();
-    const container = getMenuContainer();
+    const menu = getMenuContainer();
 
-    if (!container.length) return;
+    if (!menu) return;
 
-    if (!settings.enabled) {
+    if (!extension_settings.manual_saver.enabled) {
         $('#manualSaveButton').remove();
-        menuButton = null;
         return;
     }
 
     if (!$('#manualSaveButton').length) {
-        menuButton = createMenuButton();
-        container.prepend(menuButton);
+        const buttonHtml = `
+        <div id="manualSaveButton" class="list-group-item flex-container" tabindex="0">
+            <i class="fa-solid fa-floppy-disk"></i>
+            <span>保存聊天</span>
+        </div>`;
+        menu.prepend(buttonHtml);
+
+        $('#manualSaveButton').on('click', handleManualSaveClick);
     }
 }
 
-function observeMenu() {
-    if (buttonObserver) return;
+function startMenuWatcher() {
+    if (menuCheckInterval) return;
 
-    buttonObserver = new MutationObserver(() => {
+    menuCheckInterval = setInterval(() => {
         updateButtonState();
-    });
-
-    buttonObserver.observe(document.body, {
-        childList: true,
-        subtree: true,
-    });
-
-    updateButtonState();
+    }, 500);
 }
 
-jQuery(async () => {
+jQuery(() => {
     loadSettings();
-    renderSettings();
-    patchFetch();
-    observeMenu();
+    appendSettingsHtml();
+    updateButtonState();
+    startMenuWatcher();
 
     console.log('[ST-Manual-Saver] Loaded');
 });
