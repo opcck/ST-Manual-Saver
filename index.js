@@ -1,244 +1,268 @@
-import { saveChatConditional } from '../../../../script.js';
-import { extension_settings, saveSettingsDebounced } from '../../../extensions.js';
+import { saveChatConditional, saveSettingsDebounced } from '../../../../script.js';
+import { extension_settings } from '../../../extensions.js';
 
-const extensionName = 'ST-Manual-Saver';
-const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
+const MODULE_NAME = 'manual_saver';
+const AUDIO_FILE = 'scripts/extensions/third-party/ST-Manual-Saver/save-success.mp3';
 
-const defaultSettings = {
+const defaultSettings = Object.freeze({
     enabled: true,
     allowTimedSave: true,
     allowInterval: 10,
     playSound: true,
-};
+});
 
-let isManualSave = false;
-let lastAllowedSaveTime = 0;
-let originalFetch = window.fetch;
-let menuCheckInterval = null;
+function getSettings() {
+    if (!extension_settings[MODULE_NAME]) {
+        extension_settings[MODULE_NAME] = { ...defaultSettings };
+    }
 
-function loadSettings() {
-    extension_settings.manual_saver = extension_settings.manual_saver || {};
-    extension_settings.manual_saver.enabled =
-        extension_settings.manual_saver.enabled ?? defaultSettings.enabled;
-    extension_settings.manual_saver.allowTimedSave =
-        extension_settings.manual_saver.allowTimedSave ?? defaultSettings.allowTimedSave;
-    extension_settings.manual_saver.allowInterval =
-        extension_settings.manual_saver.allowInterval ?? defaultSettings.allowInterval;
-    extension_settings.manual_saver.playSound =
-        extension_settings.manual_saver.playSound ?? defaultSettings.playSound;
+    for (const key of Object.keys(defaultSettings)) {
+        if (!Object.hasOwnProperty.call(extension_settings[MODULE_NAME], key)) {
+            extension_settings[MODULE_NAME][key] = defaultSettings[key];
+        }
+    }
+
+    return extension_settings[MODULE_NAME];
 }
 
-function playSaveSuccessSound() {
+function saveSettings() {
+    saveSettingsDebounced();
+}
+
+function playSaveSound() {
+    const settings = getSettings();
+    if (!settings.playSound) return;
+
     try {
-        if (!extension_settings.manual_saver.playSound) return;
-
-        const audio = new Audio(`${extensionFolderPath}/save-success.mp3`);
+        const audio = new Audio(AUDIO_FILE);
         audio.volume = 0.6;
-        audio.play().catch((err) => {
-            console.debug('[ST-Manual-Saver] Failed to play sound:', err);
+        audio.play().catch(error => {
+            console.warn('[ST-Manual-Saver] Failed to play sound:', error);
         });
-    } catch (err) {
-        console.debug('[ST-Manual-Saver] Audio init failed:', err);
+    } catch (error) {
+        console.warn('[ST-Manual-Saver] Failed to create audio:', error);
     }
 }
 
-function isTimedSaveAllowed() {
-    if (!extension_settings.manual_saver.allowTimedSave) return false;
+function renderSettingsHtml() {
+    const settings = getSettings();
 
-    const intervalMs = Number(extension_settings.manual_saver.allowInterval || 0) * 60 * 1000;
-    if (intervalMs <= 0) return true;
-
-    return Date.now() - lastAllowedSaveTime >= intervalMs;
-}
-
-function isSaveRequest(url) {
-    if (!url) return false;
-    return url.includes('/api/chats/save') || url.includes('/api/chats/group/save');
-}
-
-window.fetch = async function (...args) {
-    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
-
-    if (!isSaveRequest(url)) {
-        return originalFetch.apply(this, args);
-    }
-
-    if (!extension_settings.manual_saver.enabled) {
-        return originalFetch.apply(this, args);
-    }
-
-    if (isManualSave) {
-        try {
-            const response = await originalFetch.apply(this, args);
-            lastAllowedSaveTime = Date.now();
-
-            if (response.ok) {
-                toastr.success('聊天已成功保存！');
-                playSaveSuccessSound();
-            } else {
-                toastr.error('聊天保存失败！');
-            }
-
-            return response;
-        } finally {
-            isManualSave = false;
-        }
-    }
-
-    if (isTimedSaveAllowed()) {
-        lastAllowedSaveTime = Date.now();
-        const response = await originalFetch.apply(this, args);
-
-        if (response.ok) {
-            playSaveSuccessSound();
-        }
-
-        return response;
-    }
-
-    console.debug('[ST-Manual-Saver] Blocked auto-save request:', url);
-
-    return new Response(
-        JSON.stringify({
-            status: 'ok',
-            message: 'Blocked by ST-Manual-Saver',
-        }),
-        {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-        }
-    );
-};
-
-function appendSettingsHtml() {
-    if ($('#manual_saver_settings').length) return;
-
-    const settingsHtml = `
-    <div id="manual_saver_settings" class="extension_block">
+    return `
+    <div id="manual_saver_settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>ST Manual Saver</b>
+                <b>手动保存</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <label class="checkbox_label">
-                    <input type="checkbox" id="manual_saver_enabled">
-                    启用手动保存模式
+                <label class="checkbox_label" for="manual_saver_enabled">
+                    <input id="manual_saver_enabled" type="checkbox" ${settings.enabled ? 'checked' : ''} />
+                    启用插件
                 </label>
-                <br>
+                <p>启用插件后，SillyTavern的自动保存聊天记录功能将被禁用，仅允许手动保存和定时允许自动保存</p>
 
-                <label class="checkbox_label">
-                    <input type="checkbox" id="manual_saver_allowTimedSave">
-                    启用定时自动保存放行
+                <hr>
+
+                <label class="checkbox_label" for="manual_saver_allow_timed_save">
+                    <input id="manual_saver_allow_timed_save" type="checkbox" ${settings.allowTimedSave ? 'checked' : ''} ${!settings.enabled ? 'disabled' : ''} />
+                    启用定时允许自动保存
                 </label>
-                <br>
+                <p>启用后，每隔一段时间将允许一次自动保存，以避免忘记手动保存导致的大量聊天记录丢失</p>
 
-                <label for="manual_saver_allowInterval">自动保存放行间隔（分钟）</label>
-                <input
-                    type="number"
-                    id="manual_saver_allowInterval"
-                    min="0"
-                    step="1"
-                    class="text_pole"
-                    style="max-width: 120px;"
-                >
-                <br><br>
+                <div id="manual_saver_timed_options" ${!settings.enabled ? 'disabled' : ''}>
+                    <label for="manual_saver_allow_interval">间隔时间（分钟）</label>
+                    <input id="manual_saver_allow_interval" class="text_pole" type="number" min="1" step="1" value="${settings.allowInterval}" />
 
-                <label class="checkbox_label">
-                    <input type="checkbox" id="manual_saver_playSound">
-                    保存成功时播放提示音
-                </label>
+                    <br><br>
+
+                    <label class="checkbox_label" for="manual_saver_play_sound">
+                        <input id="manual_saver_play_sound" type="checkbox" ${settings.playSound ? 'checked' : ''} />
+                        保存成功时播放提示音
+                    </label>
+                </div>
             </div>
         </div>
-    </div>`;
-
-    $('#extensions_settings').append(settingsHtml);
-
-    $('#manual_saver_enabled')
-        .prop('checked', extension_settings.manual_saver.enabled)
-        .on('change', function () {
-            extension_settings.manual_saver.enabled = $(this).prop('checked');
-            saveSettingsDebounced();
-            updateButtonState();
-        });
-
-    $('#manual_saver_allowTimedSave')
-        .prop('checked', extension_settings.manual_saver.allowTimedSave)
-        .on('change', function () {
-            extension_settings.manual_saver.allowTimedSave = $(this).prop('checked');
-            saveSettingsDebounced();
-        });
-
-    $('#manual_saver_allowInterval')
-        .val(extension_settings.manual_saver.allowInterval)
-        .on('input change', function () {
-            const value = Number($(this).val());
-            extension_settings.manual_saver.allowInterval = Number.isFinite(value) && value >= 0
-                ? value
-                : defaultSettings.allowInterval;
-            saveSettingsDebounced();
-        });
-
-    $('#manual_saver_playSound')
-        .prop('checked', extension_settings.manual_saver.playSound)
-        .on('change', function () {
-            extension_settings.manual_saver.playSound = $(this).prop('checked');
-            saveSettingsDebounced();
-        });
+    </div>
+    `;
 }
 
-async function handleManualSaveClick() {
-    try {
-        isManualSave = true;
-        await saveChatConditional();
-    } catch (err) {
-        isManualSave = false;
-        console.error('[ST-Manual-Saver] Manual save failed:', err);
-        toastr.error('手动保存失败！');
+function addSaveButton() {
+    if ($('#manual_save_button').length) return;
+
+    let extensionsMenu = $('#extensionsMenu');
+    if (!extensionsMenu.length) {
+        const optionsMenu = $('#options');
+        if (!optionsMenu.length) {
+            console.warn('[ST-Manual-Saver] Menu not found. Cannot add save button.');
+            return;
+        }
+        extensionsMenu = optionsMenu;
     }
+
+    const saveButton = $(`
+        <div id="manual_save_button" class="list-group-item flex-container">
+            <i class="fa-solid fa-save"></i>
+            <span>保存聊天</span>
+        </div>
+    `);
+
+    saveButton.on('click', async () => {
+        console.log('[ST-Manual-Saver] Manual save triggered.');
+        isManualSave = true;
+
+        try {
+            await saveChatConditional();
+        } catch (error) {
+            console.error('[ST-Manual-Saver] Error while trying to initiate save:', error);
+            if (window.toastr) {
+                window.toastr.error(`Could not initiate save: ${error.message}`, 'ST-Manual-Saver');
+            }
+            isManualSave = false;
+        }
+    });
+
+    extensionsMenu.append(saveButton);
 }
 
-function getMenuContainer() {
-    if ($('#extensionsMenu').length) return $('#extensionsMenu');
-    if ($('#options').length) return $('#options');
-    return null;
+function removeSaveButton() {
+    $('#manual_save_button').remove();
 }
 
 function updateButtonState() {
-    const menu = getMenuContainer();
-
-    if (!menu) return;
-
-    if (!extension_settings.manual_saver.enabled) {
-        $('#manualSaveButton').remove();
-        return;
-    }
-
-    if (!$('#manualSaveButton').length) {
-        const buttonHtml = `
-        <div id="manualSaveButton" class="list-group-item flex-container" tabindex="0">
-            <i class="fa-solid fa-floppy-disk"></i>
-            <span>保存聊天</span>
-        </div>`;
-        menu.prepend(buttonHtml);
-
-        $('#manualSaveButton').on('click', handleManualSaveClick);
+    if (getSettings().enabled) {
+        const buttonInterval = setInterval(() => {
+            if ($('#extensionsMenu').length || $('#options').length) {
+                addSaveButton();
+                clearInterval(buttonInterval);
+            }
+        }, 500);
+    } else {
+        removeSaveButton();
     }
 }
 
-function startMenuWatcher() {
-    if (menuCheckInterval) return;
+let lastAllowedAutoSaveTimestamp = Date.now();
 
-    menuCheckInterval = setInterval(() => {
+function resetTimer() {
+    console.log('[ST-Manual-Saver] Auto-save timer has been reset.');
+    lastAllowedAutoSaveTimestamp = Date.now();
+}
+
+function bindSettingsEvents() {
+    const s = () => getSettings();
+    const save = () => saveSettings();
+
+    $(document).on('change', '#manual_saver_enabled', function () {
+        s().enabled = $(this).prop('checked');
+        save();
+        $('#manual_saver_timed_options').prop('disabled', !s().enabled);
+        $('#manual_saver_allow_timed_save').prop('disabled', !s().enabled);
+        $('#manual_saver_allow_interval').prop('disabled', !s().enabled);
+        $('#manual_saver_play_sound').prop('disabled', !s().enabled);
         updateButtonState();
-    }, 500);
+        resetTimer();
+    });
+
+    $(document).on('change', '#manual_saver_allow_timed_save', function () {
+        s().allowTimedSave = $(this).prop('checked');
+        save();
+    });
+
+    $(document).on('input', '#manual_saver_allow_interval', function () {
+        s().allowInterval = parseInt($(this).val()) || defaultSettings.allowInterval;
+        save();
+        resetTimer();
+    });
+
+    $(document).on('change', '#manual_saver_play_sound', function () {
+        s().playSound = $(this).prop('checked');
+        save();
+    });
 }
 
-jQuery(() => {
-    loadSettings();
-    appendSettingsHtml();
-    updateButtonState();
-    startMenuWatcher();
+console.log('[ST-Manual-Saver] Plugin loading and patching fetch...');
 
-    console.log('[ST-Manual-Saver] Loaded');
+const originalFetch = window.fetch;
+let isManualSave = false;
+
+window.fetch = function (url, options) {
+    const settings = getSettings();
+
+    if (!settings.enabled) {
+        return originalFetch.apply(this, arguments);
+    }
+
+    const urlString = url.toString();
+    const isSaveRequest = urlString.includes('/api/chats/save') || urlString.includes('/api/chats/group/save');
+
+    if (isSaveRequest) {
+        if (isManualSave) {
+            console.log('[ST-Manual-Saver] Allowing manual chat save request to:', urlString);
+            isManualSave = false;
+
+            return originalFetch.apply(this, arguments).then(response => {
+                if (response.ok) {
+                    if (window.toastr) window.toastr.success('聊天保存成功', 'ST-Manual-Saver');
+                    playSaveSound();
+                } else {
+                    if (window.toastr) window.toastr.error(`聊天保存失败: ${response.statusText}`, 'ST-Manual-Saver');
+                }
+                return response;
+            }).catch(error => {
+                console.error('[ST-Manual-Saver] Manual save fetch error:', error);
+                if (window.toastr) window.toastr.error(`聊天保存失败: ${error.message}`, 'ST-Manual-Saver');
+                throw error;
+            });
+        } else {
+            if (settings.allowTimedSave) {
+                const now = Date.now();
+                const intervalMs = settings.allowInterval * 60 * 1000;
+
+                if (now - lastAllowedAutoSaveTimestamp >= intervalMs) {
+                    resetTimer();
+                    console.log('[ST-Manual-Saver] Allowing timed automatic save.');
+
+                    return originalFetch.apply(this, arguments).then(response => {
+                        if (response.ok) {
+                            if (window.toastr) window.toastr.success(`定时自动保存成功 (间隔: ${settings.allowInterval}分钟)`, 'ST-Manual-Saver');
+                            playSaveSound();
+                        } else {
+                            if (window.toastr) window.toastr.error(`定时自动保存失败 (间隔: ${settings.allowInterval}分钟): ${response.statusText}`, 'ST-Manual-Saver');
+                        }
+                        return response;
+                    }).catch(error => {
+                        console.error('[ST-Manual-Saver] Timed auto-save fetch error:', error);
+                        if (window.toastr) window.toastr.error(`定时自动保存失败 (间隔: ${settings.allowInterval}分钟): ${error.message}`, 'ST-Manual-Saver');
+                        throw error;
+                    });
+                }
+            }
+
+            console.log('[ST-Manual-Saver] Intercepted and blocked automatic chat save request to:', urlString);
+
+            return Promise.resolve(new Response(
+                JSON.stringify({ status: 'ok', message: 'Blocked by ST-Manual-Saver' }),
+                {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                }
+            ));
+        }
+    }
+
+    return originalFetch.apply(this, arguments);
+};
+
+console.log('[ST-Manual-Saver] Global fetch patched successfully.');
+
+$(document).ready(function () {
+    const extensionsSettings = $('#extensions_settings');
+    if (extensionsSettings.length) {
+        extensionsSettings.append(`
+            ${renderSettingsHtml()}
+        `);
+        bindSettingsEvents();
+    }
+
+    updateButtonState();
 });
